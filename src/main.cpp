@@ -1,5 +1,5 @@
 #include <Arduino.h>
-
+ADC_MODE(ADC_VCC)
 #include <ESP8266WiFi.h>
 #include <AdafruitIO_WiFi.h>
 #include <Adafruit_Sensor.h>
@@ -7,20 +7,14 @@
 #include <DHT_U.h>
 #include "config.h"
 #include <EEPROM.h>
+#include "user_interface.h"
 
 #define LED_ONBOARD			2
 
-#define PIN_M1_PWM			12
-#define PIN_M1_POLARITY		4
-#define PIN_M2_PWM			13
-#define PIN_M2_POLARITY		5
-#define PIN_S1				14
-#define PIN_S2				16
-
+#define LIGHT_SLEEP_PERIOD_ms  600e3
 #define DEEP_SLEEP_PERIOD_uS  600e6
 
-
-#define DHTPIN PIN_S1     // Digital pin connected to the DHT sensor 
+#define DHTPIN 0 // ESP01 = 0, RC-board= 14     // Digital pin connected to the DHT sensor 
 #define DHTTYPE    DHT11     // DHT 11
 #define EEPROM_MAGIC_HDR 248726
 DHT_Unified dht(DHTPIN, DHTTYPE);
@@ -29,6 +23,7 @@ AdafruitIO_WiFi* io;
 
 AdafruitIO_Feed *temperature;
 AdafruitIO_Feed *humidity;
+AdafruitIO_Feed *battery;
 
 typedef struct {
   int hdr;
@@ -38,32 +33,44 @@ typedef struct {
 
 wifi_data_t wifi_data;
 
+bool connected=false;
+
 void readSensorAndSend();
 
 void initGPIO() {
-	// init GPIO
-	pinMode(PIN_M1_PWM, OUTPUT);
-	pinMode(PIN_M1_POLARITY, OUTPUT);
-	pinMode(PIN_M2_PWM, OUTPUT);
-	pinMode(PIN_M2_POLARITY, OUTPUT);
-	// pinMode(PIN_S1, OUTPUT);
-	// pinMode(PIN_S2, OUTPUT);
-	digitalWrite(PIN_M1_PWM, 0);
-	digitalWrite(PIN_M2_PWM, 0);
-
 	pinMode(LED_ONBOARD, OUTPUT);
 	digitalWrite(LED_ONBOARD, HIGH);
 }
 
 
-byte ledState = LOW;
 void toggleLed() {
-	ledState = ledState == LOW ? HIGH : LOW;
+	int ledState = !digitalRead(LED_ONBOARD);
 	digitalWrite(LED_ONBOARD, ledState);
+}
+
+void wakeupHandle() {
+  connected=false;
+  Serial.println("Wake up");
+}
+void sleep() {
+  Serial.println("going to sleep");
+  connected=false;
+  if (!WiFi.mode(WIFI_OFF)) {
+    Serial.println("Failed to set WiFi.mode(WIFI_OFF)");
+    while(1);
+  }
+  WiFi.setSleepMode(WIFI_LIGHT_SLEEP);
+  digitalWrite(LED_ONBOARD, 0);
+  if (WiFi.forceSleepBegin(LIGHT_SLEEP_PERIOD_ms*1000)) {
+    delay(LIGHT_SLEEP_PERIOD_ms);
+  }
+  
 }
 
 bool runProvisioning() {
   bool done=false;
+  memset(&wifi_data, 0, sizeof(wifi_data_t));
+
   unsigned long timeout=millis()+50000;
   digitalWrite(LED_ONBOARD, HIGH);
   Serial.setTimeout(50000);
@@ -84,7 +91,10 @@ bool runProvisioning() {
         Serial.print(c);
         if (c=='\n')
           break;
-        if (c!='\r') 
+        if (c==0x08 && str.length() > 0) {
+          str.remove(str.length()-1, 1);
+        }
+        else if (c!='\r') 
           str.concat(c);
       }
     }
@@ -134,12 +144,8 @@ bool runProvisioning() {
   return done;
 }
 
-void setup() {
+void connectWifi() {
   int wifi_timeout;
-  bool connected=false;
-  // put your setup code here, to run once:
-  Serial.begin(9600);
-  Serial.println("=== ESP Temperature and Humidity Monitor ===");
   initGPIO();
   EEPROM.begin(sizeof(wifi_data_t));
   EEPROM.get<wifi_data_t>(0, wifi_data);
@@ -167,7 +173,7 @@ void setup() {
       if (wifi_timeout<=0) {
         // shut down if provisioning fails
         if (!runProvisioning()) {
-          ESP.deepSleep(DEEP_SLEEP_PERIOD_uS);
+          sleep();
         }
         else {
           break;
@@ -175,25 +181,32 @@ void setup() {
       }
       wifi_timeout -= 500;
       delay(500);
-    }
+    } 
     connected= (io->status() == AIO_CONNECTED);
-  }
+  }  
+}
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  delay(2000);
+  Serial.println("=== ESP Temperature and Humidity Monitor ===");
+
+  
+ 
+  connectWifi();
   temperature = io->feed("temperature");
   humidity = io->feed("humidity");
-  // we are connected
-  Serial.println();
-  Serial.println(io->statusText());
-  dht.begin();
-  EEPROM.end();
-
-  readSensorAndSend();
+  battery = io->feed("battery");
+  
 }
 
 void readSensorAndSend() {
   sensors_event_t event;
   bool success=false;
+  float vcc;
   io->run();
-  toggleLed();
+  digitalWrite(LED_ONBOARD, HIGH);
   dht.temperature().getEvent(&event);
   if (isnan(event.temperature)) {
     Serial.println("Error reading temperature!");
@@ -217,21 +230,32 @@ void readSensorAndSend() {
     humidity->save(event.relative_humidity);
   }
   
+  vcc = (float)ESP.getVcc() / 1000.f;
+  battery->save(vcc);
+
   Serial.flush();
   io->run();
   io->wifi_disconnect();
-  if (success) {
-    toggleLed();
-  }
-  else {
-    for (int i=0; i<5; i++) {
+  if (!success) {
+    for (int i=0; i<10; i++) {
       toggleLed();
       delay(200);
     }
   }
-
-  ESP.deepSleep(DEEP_SLEEP_PERIOD_uS, RF_DEFAULT);
+  digitalWrite(LED_ONBOARD, LOW);
+  
+  
 }
 void loop() {
+  if (!connected) {
+    
+    connectWifi();
+  }
+  Serial.println();
+  Serial.println(io->statusText());
+  dht.begin();
 
+  readSensorAndSend();
+
+  sleep();
 }
