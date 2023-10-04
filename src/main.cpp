@@ -1,10 +1,12 @@
 #include <Arduino.h>
 ADC_MODE(ADC_VCC)
 #include <ESP8266WiFi.h>
-#include <AdafruitIO_WiFi.h>
-#include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
+#define AIO_DEBUG  1
+#include <AdafruitIO_WiFi.h>
+#include <Adafruit_Sensor.h>
+
 #include "config.h"
 #include <EEPROM.h>
 #include "user_interface.h"
@@ -12,7 +14,6 @@ ADC_MODE(ADC_VCC)
 #define LED_ONBOARD			2
 
 #define LIGHT_SLEEP_PERIOD_ms  600e3
-#define DEEP_SLEEP_PERIOD_uS  600e6
 
 #define DHTPIN 0 // ESP01 = 0, RC-board= 14     // Digital pin connected to the DHT sensor 
 #define DHTTYPE    DHT11     // DHT 11
@@ -33,8 +34,6 @@ typedef struct {
 
 wifi_data_t wifi_data;
 
-bool connected=false;
-
 void readSensorAndSend();
 
 void initGPIO() {
@@ -49,12 +48,10 @@ void toggleLed() {
 }
 
 void wakeupHandle() {
-  connected=false;
   Serial.println("Wake up");
 }
 void sleep() {
   Serial.println("going to sleep");
-  connected=false;
   if (!WiFi.mode(WIFI_OFF)) {
     Serial.println("Failed to set WiFi.mode(WIFI_OFF)");
     while(1);
@@ -64,6 +61,7 @@ void sleep() {
   if (WiFi.forceSleepBegin(LIGHT_SLEEP_PERIOD_ms*1000)) {
     delay(LIGHT_SLEEP_PERIOD_ms);
   }
+  
   
 }
 
@@ -155,15 +153,17 @@ void connectWifi() {
     runProvisioning();
   }
 
-  while (!connected) {
+  do {
 
     io = new AdafruitIO_WiFi(IO_USERNAME, IO_KEY, wifi_data.ssid, wifi_data.pwd);
 
     Serial.print("SSID: ");
     Serial.println(wifi_data.ssid);
     
+
     // connect to io.adafruit.com
     Serial.print("Connecting to Adafruit IO");
+    
     io->connect();
     wifi_timeout=10000;
     // wait for a connection
@@ -182,8 +182,11 @@ void connectWifi() {
       wifi_timeout -= 500;
       delay(500);
     } 
-    connected= (io->status() == AIO_CONNECTED);
   }  
+  while (io->status() < AIO_CONNECTED);
+  temperature = io->feed("temperature");
+  humidity = io->feed("humidity");
+  battery = io->feed("battery");
 }
 
 void setup() {
@@ -192,19 +195,16 @@ void setup() {
   delay(2000);
   Serial.println("=== ESP Temperature and Humidity Monitor ===");
 
-  
- 
   connectWifi();
-  temperature = io->feed("temperature");
-  humidity = io->feed("humidity");
-  battery = io->feed("battery");
   
+  dht.begin();
 }
 
 void readSensorAndSend() {
   sensors_event_t event;
   bool success=false;
   float vcc;
+  aio_status_t status;
   io->run();
   digitalWrite(LED_ONBOARD, HIGH);
   dht.temperature().getEvent(&event);
@@ -215,8 +215,10 @@ void readSensorAndSend() {
     Serial.print("Temperature: ");
     Serial.print(event.temperature);
     Serial.println("°C");
-    temperature->save(event.temperature);
-    success=true;
+    success=temperature->save(event.temperature);
+    if (!success) {
+      Serial.println("Failed to save temperature!");
+    }
   }
   // Get humidity event and print its value.
   dht.humidity().getEvent(&event);
@@ -227,16 +229,24 @@ void readSensorAndSend() {
     Serial.print("Humidity: ");
     Serial.print(event.relative_humidity);
     Serial.println("%");
-    humidity->save(event.relative_humidity);
+    success=humidity->save(event.relative_humidity);
+    if (!success) {
+      Serial.print("Failed to save humidity!");
+    }
   }
   
   vcc = (float)ESP.getVcc() / 1000.f;
-  battery->save(vcc);
+  success=battery->save(vcc);
+  if (!success) {
+    Serial.print("Failed to save battery voltage!");
+  }
 
   Serial.flush();
-  io->run();
-  io->wifi_disconnect();
+  status=io->run();
+  Serial.printf("AIO status: %d\n", status);
+  // io->wifi_disconnect();
   if (!success) {
+    Serial.println("Sending data failed.");
     for (int i=0; i<10; i++) {
       toggleLed();
       delay(200);
@@ -247,13 +257,14 @@ void readSensorAndSend() {
   
 }
 void loop() {
-  if (!connected) {
+  if (io->status() < AIO_CONNECTED) {
     
     connectWifi();
+    
   }
   Serial.println();
   Serial.println(io->statusText());
-  dht.begin();
+  
 
   readSensorAndSend();
 
