@@ -16,4 +16,4 @@ In file `main.cpp` change `DHTPIN`to the GPIO nummber connected to the DHT-11 da
 There is no pre-defined wifi setting. If no connection setting is found in the EEPROM (not a real EEPROM, just an emulation) the credentials can
 entered of the serial prompt.
 
-Use `ssid=...` + <Enter> to set the SSID, `pwd=...` + <Enter> for the wifi key. Once these are set enter `save` + <Enter> to commit the settings.
+Use `ssid=...` + *Enter* to set the SSID, `pwd=...` + *Enter* for the wifi key. Once these are set enter `save` + *Enter* to commit the settings.
