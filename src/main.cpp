@@ -18,6 +18,8 @@ ADC_MODE(ADC_VCC)
 #define DHTPIN 0 // ESP01 = 0, RC-board= 14     // Digital pin connected to the DHT sensor 
 #define DHTTYPE    DHT11     // DHT 11
 #define EEPROM_MAGIC_HDR 248726
+#define BO_THRESHOLD_mV 3433    // this is 3280 * 1.0467 to correct actual Vdd vs read value 
+
 DHT_Unified dht(DHTPIN, DHTTYPE);
 
 AdafruitIO_WiFi* io;
@@ -54,7 +56,7 @@ void sleep() {
   Serial.println("going to sleep");
   if (!WiFi.mode(WIFI_OFF)) {
     Serial.println("Failed to set WiFi.mode(WIFI_OFF)");
-    while(1);
+    ESP.reset();
   }
   WiFi.setSleepMode(WIFI_LIGHT_SLEEP);
   digitalWrite(LED_ONBOARD, 0);
@@ -194,9 +196,13 @@ void setup() {
   Serial.begin(9600);
   delay(2000);
   Serial.println("=== ESP Temperature and Humidity Monitor ===");
+  
+  while (ESP.getVcc() < BO_THRESHOLD_mV) {
+    sleep();
+  }
 
   connectWifi();
-  
+
   dht.begin();
 }
 
@@ -257,16 +263,14 @@ void readSensorAndSend() {
   
 }
 void loop() {
-  if (io->status() < AIO_CONNECTED) {
-    
-    connectWifi();
-    
+  if (ESP.getVcc() > BO_THRESHOLD_mV) {
+    if (io->status() < AIO_CONNECTED) {
+      connectWifi();
+    }
+    Serial.println();
+    Serial.println(io->statusText());
+    readSensorAndSend();
   }
-  Serial.println();
-  Serial.println(io->statusText());
-  
-
-  readSensorAndSend();
 
   sleep();
 }
